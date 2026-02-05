@@ -11,11 +11,9 @@ const CONFIG = {
     DEFAULT_SHEET_ID: '17m7yXKC8Pow9ovak5j_5_74sNckMH2bldRR0C-lG78M',
     COREDEV_LECTURE_API: 'https://d3vun18xqshzq8.cloudfront.net/lecture',
     COREDEV_HISTORY_API: 'https://d3vun18xqshzq8.cloudfront.net/tracking-history',
-    COREDEV_AUTH:
-        'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ7XCJpZFwiOlwiZTVlZDJhYTgtYjAwZC00ZDZkLTliMDktMmI1NTBmZjlmNGUxXCIsXCJyb2xlc1wiOlwiUk9MRV9VU0VSXCJ9IiwiaWF0IjoxNzY5MTI1MzU4LCJleHAiOjE3NjkyMTE3NTh9.d3UpOLwhbufheUE0QduPczRgLgngcYu4JSoEd79AZiQ'.replace(
-            /\s/g,
-            ''
-        ),
+    COREDEV_LOGIN_API: 'https://d3vun18xqshzq8.cloudfront.net/login/local-login',
+    // 기본값은 localStorage에서 가져오거나 빈 문자열
+    COREDEV_AUTH: '',
 };
 
 const State = {
@@ -56,8 +54,85 @@ const normalizePhone = (v) => {
 
 const parseAmount = (v) => parseInt(String(v || '0').replace(/[^0-9]/g, '')) || 0;
 
+// --- 🔐 코어데브 인증 토큰 관리 ---
+const COREDEV_TOKEN_KEY = 'coredev_auth_token';
+
+function getCoredevToken() {
+    return localStorage.getItem(COREDEV_TOKEN_KEY) || '';
+}
+
+function setCoredevToken(token) {
+    localStorage.setItem(COREDEV_TOKEN_KEY, token);
+    CONFIG.COREDEV_AUTH = token;
+}
+
+function clearCoredevToken() {
+    localStorage.removeItem(COREDEV_TOKEN_KEY);
+    CONFIG.COREDEV_AUTH = '';
+}
+
+// 페이지 로드 시 저장된 토큰 확인
+function initCoredevAuth() {
+    const savedToken = getCoredevToken();
+    if (savedToken) {
+        CONFIG.COREDEV_AUTH = savedToken;
+    }
+}
+
+// 코어데브 자동 로그인 함수 (admin/admin!23)
+async function autoLoginToCoredev() {
+    // 이미 토큰이 있고 유효한지 확인 (간단한 체크)
+    const savedToken = getCoredevToken();
+    if (savedToken) {
+        CONFIG.COREDEV_AUTH = savedToken;
+        return true; // 이미 로그인되어 있음
+    }
+
+    try {
+        updateStatus('코어데브 로그인 중...');
+
+        // 로그인 API 호출 (admin/admin!23 자동 로그인)
+        const resp = await fetch(CONFIG.COREDEV_LOGIN_API, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                loginId: 'admin',
+                loginPw: 'admin!23',
+            }),
+        });
+
+        if (!resp.ok) {
+            const errorData = await resp.json().catch(() => ({}));
+            throw new Error(errorData.message || `로그인 실패: ${resp.status} ${resp.statusText}`);
+        }
+
+        const data = await resp.json();
+
+        // 응답에서 accessToken 추출
+        const token = data.accessToken;
+
+        if (!token) {
+            throw new Error('토큰을 받지 못했습니다.');
+        }
+
+        setCoredevToken(token);
+        updateStatus('');
+        return true;
+    } catch (e) {
+        console.error('코어데브 자동 로그인 오류:', e);
+        updateStatus('');
+        alert(`코어데브 로그인 실패: ${e.message || '알 수 없는 오류가 발생했습니다.'}`);
+        return false;
+    }
+}
+
 // --- ⚙️ Google API 초기화 및 네온 효과 제어 ---
 window.onload = () => {
+    // 코어데브 인증 초기화
+    initCoredevAuth();
+
     gapi.load('client', async () => {
         await gapi.client.init({ apiKey: CONFIG.API_KEY, discoveryDocs: CONFIG.DISCOVERY_DOCS });
         const authBtn = $('auth_btn');
@@ -89,7 +164,19 @@ window.onload = () => {
     });
 };
 
-$('auth_btn').onclick = () => window.tokenClient.requestAccessToken();
+// 구글 연동 버튼 클릭 시 코어데브 자동 로그인 먼저 실행
+$('auth_btn').onclick = async () => {
+    // 먼저 코어데브 자동 로그인 실행
+    const coredevLoginSuccess = await autoLoginToCoredev();
+
+    if (!coredevLoginSuccess) {
+        // 코어데브 로그인 실패 시 구글 연동 진행하지 않음
+        return;
+    }
+
+    // 코어데브 로그인 성공 후 구글 연동 진행
+    window.tokenClient.requestAccessToken();
+};
 
 // --- 🔍 강의 검색 및 모달 제어 ---
 $('btn_open_search').onclick = () => {
@@ -102,10 +189,46 @@ $('close_modal').onclick = () => {
 $('do_search').onclick = async () => {
     const kw = $('search_input').value.trim();
     if (!kw) return;
+
+    // 토큰 확인 및 자동 로그인
+    if (!CONFIG.COREDEV_AUTH) {
+        updateStatus('코어데브 자동 로그인 중...');
+        const loginSuccess = await autoLoginToCoredev();
+        if (!loginSuccess) {
+            alert('코어데브 로그인에 실패했습니다. 구글 연동 버튼을 다시 눌러주세요.');
+            return;
+        }
+    }
+
     try {
         updateStatus('강의 정보를 찾는 중...');
-        const url = `${CONFIG.COREDEV_LECTURE_API}?page=0&size=20&name=${encodeURIComponent(kw)}&isPaid=false`;
-        const resp = await fetch(url, { headers: { 'Nuf-Authorization': CONFIG.COREDEV_AUTH } });
+        const url = `${CONFIG.COREDEV_LECTURE_API}?page=0&size=20&name=${encodeURIComponent(
+            kw
+        )}&isPaid=false`;
+        let resp = await fetch(url, { headers: { 'Nuf-Authorization': CONFIG.COREDEV_AUTH } });
+
+        if (!resp.ok) {
+            if (resp.status === 403) {
+                // 토큰 만료 시 자동 재로그인 시도
+                clearCoredevToken();
+                updateStatus('토큰 만료. 자동 재로그인 중...');
+                const loginSuccess = await autoLoginToCoredev();
+                if (!loginSuccess) {
+                    alert(
+                        '인증 토큰이 만료되었고 재로그인에 실패했습니다. 구글 연동 버튼을 다시 눌러주세요.'
+                    );
+                    throw new Error(`API 요청 실패: ${resp.status} ${resp.statusText}`);
+                }
+                // 재로그인 성공 후 다시 요청
+                resp = await fetch(url, { headers: { 'Nuf-Authorization': CONFIG.COREDEV_AUTH } });
+                if (!resp.ok) {
+                    throw new Error(`API 요청 실패: ${resp.status} ${resp.statusText}`);
+                }
+            } else {
+                throw new Error(`API 요청 실패: ${resp.status} ${resp.statusText}`);
+            }
+        }
+
         const data = await resp.json();
         $('search_results').innerHTML = data.content
             .map(
@@ -118,7 +241,8 @@ $('do_search').onclick = async () => {
             )
             .join('');
     } catch (e) {
-        alert('검색 실패');
+        console.error('검색 오류:', e);
+        alert(`검색 실패: ${e.message || '알 수 없는 오류가 발생했습니다.'}`);
     } finally {
         updateStatus('');
     }
@@ -143,10 +267,6 @@ trigger.onclick = () => {
     if (State.loadedTabs.length === 0) return;
     dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
     searchInput.focus();
-};
-
-window.onclick = (e) => {
-    if (!e.target.closest('.searchable-select')) dropdown.style.display = 'none';
 };
 
 searchInput.oninput = (e) => {
@@ -207,8 +327,35 @@ $('run_match').onclick = async () => {
 };
 
 async function fetchRecursiveHistory(lecture, page = 0) {
+    // 토큰 확인 및 자동 로그인
+    if (!CONFIG.COREDEV_AUTH) {
+        const loginSuccess = await autoLoginToCoredev();
+        if (!loginSuccess) {
+            throw new Error('코어데브 로그인에 실패했습니다.');
+        }
+    }
+
     const url = `${CONFIG.COREDEV_HISTORY_API}?page=${page}&size=500&lecture=${lecture.id}`;
-    const resp = await fetch(url, { headers: { 'Nuf-Authorization': CONFIG.COREDEV_AUTH } });
+    let resp = await fetch(url, { headers: { 'Nuf-Authorization': CONFIG.COREDEV_AUTH } });
+
+    if (!resp.ok) {
+        if (resp.status === 403) {
+            // 토큰 만료 시 자동 재로그인 시도
+            clearCoredevToken();
+            const loginSuccess = await autoLoginToCoredev();
+            if (!loginSuccess) {
+                throw new Error('인증 토큰이 만료되었고 재로그인에 실패했습니다.');
+            }
+            // 재로그인 성공 후 다시 요청
+            resp = await fetch(url, { headers: { 'Nuf-Authorization': CONFIG.COREDEV_AUTH } });
+            if (!resp.ok) {
+                throw new Error(`API 요청 실패: ${resp.status} ${resp.statusText}`);
+            }
+        } else {
+            throw new Error(`API 요청 실패: ${resp.status} ${resp.statusText}`);
+        }
+    }
+
     const data = await resp.json();
     data.content.forEach((app) => {
         const mediumName = app.medium && app.medium.name ? app.medium.name : '미지정(직접유입)';
@@ -266,7 +413,9 @@ function renderFinalReport() {
         let rows = Object.entries(data)
             .map(([n, v]) => formatRow(n, v.m, v.t, v.s, totalRevenue))
             .join('');
-        return `<div class="report-section"><h3>${title}</h3><table><thead><tr><th>유입 매체</th><th>매칭/트래킹</th><th>전환율</th><th>매출 합계</th><th>비중</th></tr></thead><tbody>${rows || '<tr><td colspan="5" style="text-align:center">데이터 없음</td></tr>'}</tbody></table></div>`;
+        return `<div class="report-section"><h3>${title}</h3><table><thead><tr><th>유입 매체</th><th>매칭/트래킹</th><th>전환율</th><th>매출 합계</th><th>비중</th></tr></thead><tbody>${
+            rows || '<tr><td colspan="5" style="text-align:center">데이터 없음</td></tr>'
+        }</tbody></table></div>`;
     };
 
     html += buildSection('① 페이드 (광고 유입)', stats.paid);
@@ -274,14 +423,20 @@ function renderFinalReport() {
 
     const otherPortion =
         totalRevenue > 0 ? ((stats.other.s / totalRevenue) * 100).toFixed(1) : '0.0';
-    html += `<div class="report-section"><h3>③ 기타 (매칭 정보 없음)</h3><table><thead><tr><th>유입 매체</th><th>매칭</th><th>전환율</th><th>매출 합계</th><th>비중</th></tr></thead><tbody><tr><td>기타(직접/기존유입)</td><td>${stats.other.m}/-</td><td>-</td><td>${stats.other.s.toLocaleString()}원</td><td>${otherPortion}%</td></tr></tbody></table></div>`;
+    html += `<div class="report-section"><h3>③ 기타 (매칭 정보 없음)</h3><table><thead><tr><th>유입 매체</th><th>매칭</th><th>전환율</th><th>매출 합계</th><th>비중</th></tr></thead><tbody><tr><td>기타(직접/기존유입)</td><td>${
+        stats.other.m
+    }/-</td><td>-</td><td>${stats.other.s.toLocaleString()}원</td><td>${otherPortion}%</td></tr></tbody></table></div>`;
 
     // 💡 유어하이니스께서 요청하신 캡처 양식의 요약 카드
     html += `
         <div class="summary-card">
             <h3 style="margin-top:0">📈 성과 분석 종합 요약</h3>
-            <p class="summary-line"><strong>페이드 요약</strong> : ${pSum.m}/${pSum.t} 전환율: ${pSum.t > 0 ? ((pSum.m / pSum.t) * 100).toFixed(1) : 0}% 결제금액 합계: ${pSum.s.toLocaleString()}원</p>
-            <p class="summary-line"><strong>오가닉 요약</strong> : ${oSum.m}/${oSum.t} 전환율: ${oSum.t > 0 ? ((oSum.m / oSum.t) * 100).toFixed(1) : 0}% 결제금액 합계: ${oSum.s.toLocaleString()}원</p>
+            <p class="summary-line"><strong>페이드 요약</strong> : ${pSum.m}/${pSum.t} 전환율: ${
+        pSum.t > 0 ? ((pSum.m / pSum.t) * 100).toFixed(1) : 0
+    }% 결제금액 합계: ${pSum.s.toLocaleString()}원</p>
+            <p class="summary-line"><strong>오가닉 요약</strong> : ${oSum.m}/${oSum.t} 전환율: ${
+        oSum.t > 0 ? ((oSum.m / oSum.t) * 100).toFixed(1) : 0
+    }% 결제금액 합계: ${oSum.s.toLocaleString()}원</p>
             <p style="font-size: 24px; color: var(--primary); font-weight: 800; margin: 15px 0 0; letter-spacing:-0.5px">전체 결제금액 합계 : ${totalRevenue.toLocaleString()}원</p>
         </div>
     `;
