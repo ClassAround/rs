@@ -391,6 +391,7 @@ function renderFinalReport() {
         const matchedMedium = medium || '기타(매칭없음)';
         detailRows.push({
             name: String(row[3] ?? '').trim(),
+            email: String(row[5] ?? '').trim(),
             phoneDisplay: String(row[4] ?? '').trim(),
             amount,
             matchedMedium,
@@ -432,7 +433,7 @@ function renderFinalReport() {
     const detailTableRows = detailRows
         .map(
             (r) =>
-                `<tr><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.phoneDisplay)}</td><td>${r.amount.toLocaleString()}원</td><td>${escapeHtml(r.matchedMedium)}</td></tr>`
+                `<tr><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.email)}</td><td>${escapeHtml(r.phoneDisplay)}</td><td>${r.amount.toLocaleString()}원</td><td>${escapeHtml(r.matchedMedium)}</td></tr>`
         )
         .join('');
     html += `
@@ -442,8 +443,8 @@ function renderFinalReport() {
                 <button type="button" id="dl_matched_excel" class="btn btn-primary">📥 엑셀 다운로드</button>
             </div>
             <table>
-                <thead><tr><th>이름</th><th>연락처</th><th>결제금액</th><th>매칭된 유입매체(결제자)</th></tr></thead>
-                <tbody>${detailTableRows || '<tr><td colspan="4" style="text-align:center">결제 데이터 없음</td></tr>'}</tbody>
+                <thead><tr><th>이름</th><th>이메일</th><th>연락처</th><th>결제금액</th><th>매칭된 유입매체(결제자)</th></tr></thead>
+                <tbody>${detailTableRows || '<tr><td colspan="5" style="text-align:center">결제 데이터 없음</td></tr>'}</tbody>
             </table>
         </div>
     `;
@@ -498,8 +499,8 @@ function downloadMatchedExcel() {
         return;
     }
     const aoa = [
-        ['이름', '연락처', '결제금액', '매칭된 유입매체(결제자)'],
-        ...rows.map((r) => [r.name, r.phoneDisplay, r.amount, r.matchedMedium]),
+        ['이름', '이메일', '연락처', '결제금액', '매칭된 유입매체(결제자)'],
+        ...rows.map((r) => [r.name, r.email, r.phoneDisplay, r.amount, r.matchedMedium]),
     ];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     const wb = XLSX.utils.book_new();
