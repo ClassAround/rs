@@ -22,6 +22,7 @@ const State = {
     free: [],
     selectedLectures: [],
     loadedTabs: [],
+    lastDetailRows: [], // 매칭된 결제자 상세 (엑셀 다운로드용)
 };
 
 const $ = (id) => document.getElementById(id);
@@ -53,6 +54,15 @@ const normalizePhone = (v) => {
 };
 
 const parseAmount = (v) => parseInt(String(v || '0').replace(/[^0-9]/g, '')) || 0;
+
+const escapeHtml = (s) => {
+    const str = String(s ?? '');
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+};
 
 // --- 🔐 코어데브 인증 토큰 관리 ---
 const COREDEV_TOKEN_KEY = 'coredev_auth_token';
@@ -370,6 +380,7 @@ async function fetchRecursiveHistory(lecture, page = 0) {
 function renderFinalReport() {
     let totalRevenue = 0;
     const stats = { paid: {}, organic: {}, other: { m: 0, s: 0 } };
+    const detailRows = []; // 매칭된 결제자 상세 목록
 
     State.free.forEach((row) => {
         const phone = normalizePhone(row[4]);
@@ -377,6 +388,13 @@ function renderFinalReport() {
         if (amount <= 0) return;
         totalRevenue += amount;
         const medium = State.trackingMap.get(phone);
+        const matchedMedium = medium || '기타(매칭없음)';
+        detailRows.push({
+            name: String(row[3] ?? '').trim(),
+            phoneDisplay: String(row[4] ?? '').trim(),
+            amount,
+            matchedMedium,
+        });
         if (medium) {
             const cat = medium.includes('구글') || medium.includes('메타') ? 'paid' : 'organic';
             if (!stats[cat][medium])
@@ -409,6 +427,27 @@ function renderFinalReport() {
     };
 
     let html = '';
+
+    // 매칭된 결제자 상세 테이블 (결과 항목에 결제자 정보 표시)
+    const detailTableRows = detailRows
+        .map(
+            (r) =>
+                `<tr><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.phoneDisplay)}</td><td>${r.amount.toLocaleString()}원</td><td>${escapeHtml(r.matchedMedium)}</td></tr>`
+        )
+        .join('');
+    html += `
+        <div class="report-section">
+            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+                <h3 style="margin:0;">📋 매칭된 결제자 상세</h3>
+                <button type="button" id="dl_matched_excel" class="btn btn-primary">📥 엑셀 다운로드</button>
+            </div>
+            <table>
+                <thead><tr><th>이름</th><th>연락처</th><th>결제금액</th><th>매칭된 유입매체(결제자)</th></tr></thead>
+                <tbody>${detailTableRows || '<tr><td colspan="4" style="text-align:center">결제 데이터 없음</td></tr>'}</tbody>
+            </table>
+        </div>
+    `;
+
     const buildSection = (title, data) => {
         let rows = Object.entries(data)
             .map(([n, v]) => formatRow(n, v.m, v.t, v.s, totalRevenue))
@@ -441,8 +480,33 @@ function renderFinalReport() {
         </div>
     `;
 
+    State.lastDetailRows = detailRows;
+
     $('report_container').innerHTML = html;
+
+    const dlBtn = $('dl_matched_excel');
+    if (dlBtn) dlBtn.onclick = downloadMatchedExcel;
+
     showToast('성과 분석 완료');
+}
+
+// 매칭된 결제자 상세 엑셀 다운로드
+function downloadMatchedExcel() {
+    const rows = State.lastDetailRows;
+    if (!rows || rows.length === 0) {
+        showToast('다운로드할 데이터가 없습니다.');
+        return;
+    }
+    const aoa = [
+        ['이름', '연락처', '결제금액', '매칭된 유입매체(결제자)'],
+        ...rows.map((r) => [r.name, r.phoneDisplay, r.amount, r.matchedMedium]),
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '매칭된 결제자');
+    const dateStr = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `매칭된_결제자_${dateStr}.xlsx`);
+    showToast('엑셀 다운로드 완료');
 }
 
 $('reset_btn').onclick = () => {
