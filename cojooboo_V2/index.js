@@ -4,8 +4,8 @@
  */
 
 const CONFIG = {
-    CLIENT_ID: '222775165025-6hm6pfhblufcjrtatclj4gi5j6fsibnj.apps.googleusercontent.com',
-    API_KEY: 'AIzaSyBPaE2YzmLpzzM1PvWk9OglwBA5qBFkYhg',
+    CLIENT_ID: '1008555021998-vqbtfp8nmu5uhdgu9vdosnovsifhv449.apps.googleusercontent.com',
+    API_KEY: 'AIzaSyDY5KzY0zUQi5sEO0nyHCJeYy1qr1V3ZX0',
     DISCOVERY_DOCS: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
     SCOPES: 'https://www.googleapis.com/auth/spreadsheets.readonly',
     DEFAULT_SHEET_ID: '17m7yXKC8Pow9ovak5j_5_74sNckMH2bldRR0C-lG78M',
