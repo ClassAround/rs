@@ -3,15 +3,30 @@
  * Features: Neon Button, Auto-Hide Status, Comprehensive ROI Summary
  */
 
+// --- 🌐 API 베이스 주소 ---
+// 우선순위: ?api=<주소> 쿼리 파라미터 > localStorage 저장값 > 기본값(운영)
+// 로컬/터널 백엔드로 붙일 때는 ?api=<새 주소> 로 한 번만 접속하면 저장된다.
+// 원래대로 되돌리려면 ?api=reset
+const DEFAULT_API_BASE = 'https://d3vun18xqshzq8.cloudfront.net';
+const API_BASE = (() => {
+    const q = new URLSearchParams(location.search).get('api');
+    if (q === 'reset') {
+        localStorage.removeItem('coredev_api_base');
+    } else if (q) {
+        localStorage.setItem('coredev_api_base', q.replace(/\/+$/, ''));
+    }
+    return (localStorage.getItem('coredev_api_base') || DEFAULT_API_BASE).replace(/\/+$/, '');
+})();
+
 const CONFIG = {
     CLIENT_ID: '1008555021998-vqbtfp8nmu5uhdgu9vdosnovsifhv449.apps.googleusercontent.com',
     API_KEY: 'AIzaSyDY5KzY0zUQi5sEO0nyHCJeYy1qr1V3ZX0',
     DISCOVERY_DOCS: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
     SCOPES: 'https://www.googleapis.com/auth/spreadsheets.readonly',
     DEFAULT_SHEET_ID: '17m7yXKC8Pow9ovak5j_5_74sNckMH2bldRR0C-lG78M',
-    COREDEV_LECTURE_API: 'https://d3vun18xqshzq8.cloudfront.net/lecture',
-    COREDEV_HISTORY_API: 'https://d3vun18xqshzq8.cloudfront.net/tracking-history',
-    COREDEV_LOGIN_API: 'https://d3vun18xqshzq8.cloudfront.net/login/local-login',
+    COREDEV_LECTURE_API: `${API_BASE}/lecture`,
+    COREDEV_HISTORY_API: `${API_BASE}/tracking-history`,
+    COREDEV_LOGIN_API: `${API_BASE}/login/local-login`,
     // 기본값은 localStorage에서 가져오거나 빈 문자열
     COREDEV_AUTH: '',
 };
