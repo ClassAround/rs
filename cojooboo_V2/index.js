@@ -35,10 +35,55 @@ const State = {
     trackingMap: new Map(),
     mediumTotalStats: new Map(),
     free: [],
+    freeHeader: [],
+    columns: null, // 현재 탭에 적용된 열 인덱스 (기본값 또는 탭별 개별설정)
     selectedLectures: [],
     loadedTabs: [],
     lastDetailRows: [], // 매칭된 결제자 상세 (엑셀 다운로드용)
 };
+
+// --- 🧭 탭별 열(column) 지정 ---
+// 기본값은 기존 양식 그대로: 구매자(D) / 전화번호(E) / 이메일(F) / 최종금액(O)
+const DEFAULT_COLUMNS = { name: 3, phone: 4, email: 5, amount: 14 };
+
+// 양식이 다른 탭만 여기에 열 번호를 덮어쓴다. (0-based: A=0, B=1, ... Z=25)
+// '오션 22기 [8/26]' 은 신양식이라 열이 통째로 다르다.
+//   C 회원명(2) / G 휴대전화번호(6) / H 이메일(7) / X 최종결제금액(23)
+//   금액은 O(주문금액)이 아니라 X(최종결제금액)을 써야 환불건이 매출에서 빠진다.
+const SHEET_COLUMN_OVERRIDES = {
+    '오션 22기 [8/26]': { name: 2, phone: 6, email: 7, amount: 23 },
+};
+
+const getColumnsForTab = (tabName) => {
+    const override = SHEET_COLUMN_OVERRIDES[tabName];
+    return { ...DEFAULT_COLUMNS, ...(override || {}), isOverride: !!override };
+};
+
+const colLetter = (i) => {
+    let n = i,
+        s = '';
+    do {
+        s = String.fromCharCode(65 + (n % 26)) + s;
+        n = Math.floor(n / 26) - 1;
+    } while (n >= 0);
+    return s;
+};
+
+// 어떤 열을 쓰는지 화면에 표시해서 눈으로 검증할 수 있게 한다.
+function describeColumns(cols, headerRow) {
+    const header = headerRow || [];
+    const part = (label, i) => {
+        const title = String(header[i] ?? '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        return `${label}=${colLetter(i)}${title ? `(${title})` : ''}`;
+    };
+    const tag = cols.isOverride ? '개별설정' : '기본값';
+    return `[${tag}] ${part('이름', cols.name)} · ${part('연락처', cols.phone)} · ${part(
+        '이메일',
+        cols.email
+    )} · ${part('금액', cols.amount)}`;
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -171,7 +216,11 @@ window.onload = () => {
         client_id: CONFIG.CLIENT_ID,
         scope: CONFIG.SCOPES,
         callback: async (resp) => {
-            if (resp.error) return;
+            if (resp.error) {
+                console.error('OAuth 실패', resp);
+                alert(`Google 인증 실패: ${resp.error} ${resp.error_description || ''}`);
+                return;
+            }
 
             const authBtn = $('auth_btn');
             authBtn.innerText = '✅ Google 연동 완료';
@@ -311,13 +360,27 @@ window.selectTabItem = async function (tabName) {
     try {
         const resp = await gapi.client.sheets.spreadsheets.values.get({
             spreadsheetId: CONFIG.DEFAULT_SHEET_ID,
-            range: `'${tabName}'!A:Z`,
+            // 신양식은 최종결제금액이 X열이라 A:Z 로는 아슬아슬하다. 여유 있게 읽는다.
+            range: `'${tabName}'!A:BZ`,
         });
-        State.free = resp.result.values.slice(1);
+        const values = resp.result.values || [];
+        if (values.length === 0) throw new Error('빈 탭입니다.');
+
+        State.freeHeader = values[0];
+        State.free = values.slice(1);
+        State.columns = getColumnsForTab(tabName);
+
+        const desc = describeColumns(State.columns, State.freeHeader);
+        const info = $('detected_columns');
+        if (info) info.innerText = desc;
+        console.log(`[${tabName}] 적용 열: ${desc}`);
+
         showToast(`탭 로드 완료: ${tabName}`);
         $('run_match').disabled = false;
     } catch (e) {
-        alert('데이터 로드 실패');
+        const err = e?.result?.error || {};
+        console.error('탭 데이터 로드 실패', e);
+        alert(`데이터 로드 실패\n\n${err.status ?? ''} ${err.message ?? e?.message ?? String(e)}`);
     } finally {
         updateStatus('');
     }
@@ -330,7 +393,15 @@ async function fetchTabs(id) {
         renderDropdownItems(State.loadedTabs);
         trigger.innerText = '분석할 탭을 선택해 주세요';
     } catch (e) {
-        alert('탭 목록 로드 실패');
+        // 실패 원인(403 권한/ API 미활성화 / 키 제한 등)을 그대로 노출한다.
+        const err = e?.result?.error || {};
+        console.error('fetchTabs 실패', e);
+        alert(
+            `탭 목록 로드 실패\n\n` +
+                `code: ${err.code ?? e?.status ?? '?'}\n` +
+                `status: ${err.status ?? '?'}\n` +
+                `message: ${err.message ?? e?.message ?? String(e)}`
+        );
     }
 }
 
@@ -397,17 +468,20 @@ function renderFinalReport() {
     const stats = { paid: {}, organic: {}, other: { m: 0, s: 0 } };
     const detailRows = []; // 매칭된 결제자 상세 목록
 
+    const cols = State.columns || DEFAULT_COLUMNS;
+    const cell = (row, i) => String(row[i] ?? '').trim();
+
     State.free.forEach((row) => {
-        const phone = normalizePhone(row[4]);
-        const amount = parseAmount(row[14]);
+        const phone = normalizePhone(row[cols.phone]);
+        const amount = parseAmount(row[cols.amount]);
         if (amount <= 0) return;
         totalRevenue += amount;
         const medium = State.trackingMap.get(phone);
         const matchedMedium = medium || '기타(매칭없음)';
         detailRows.push({
-            name: String(row[3] ?? '').trim(),
-            email: String(row[5] ?? '').trim(),
-            phoneDisplay: String(row[4] ?? '').trim(),
+            name: cell(row, cols.name),
+            email: cell(row, cols.email),
+            phoneDisplay: cell(row, cols.phone),
             amount,
             matchedMedium,
         });
