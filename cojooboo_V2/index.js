@@ -54,9 +54,79 @@ const SHEET_COLUMN_OVERRIDES = {
     '오션 22기 [8/26]': { name: 2, phone: 6, email: 7, amount: 23 },
 };
 
-const getColumnsForTab = (tabName) => {
+// 헤더 이름으로 열을 찾는다. 앞에 있는 후보일수록 우선.
+// '연화선녀 5기 [8/17]' 부터 시트가 타이탄 양식으로 바뀌면서 O열이 '결제수단'이 되어
+// 금액이 전부 0으로 읽혀 결과가 통째로 비었다. 탭마다 하드코딩하지 않도록 헤더로 감지한다.
+const HEADER_CANDIDATES = {
+    name: ['구매자', '회원명', '주문자', '이름', '성명', '구매자명', '주문자명'],
+    phone: ['휴대전화번호', '전화번호', '연락처', '휴대폰', '휴대폰번호', '구매자 전화번호', '주문자 연락처'],
+    email: ['이메일', 'email', 'e-mail', '구매자 이메일'],
+    // 최종결제금액 우선: 환불분이 빠진 금액이다. 주문금액은 최후 수단.
+    amount: ['최종결제금액', '최종금액', '실결제금액', '결제금액', '주문금액'],
+};
+// 부분일치에서 엉뚱한 열을 잡지 않게 제외할 단어 (예: '구매자 전화번호' 를 이름으로)
+const HEADER_EXCLUDE = {
+    name: ['전화', '연락처', '이메일', 'email', '주소', '아이디', 'id'],
+    phone: ['이메일', 'email'],
+    email: [],
+    amount: ['수단', '방법', '일시', '일자', '상태'],
+};
+
+const normHeader = (s) => String(s ?? '').replace(/\s+/g, '').toLowerCase();
+
+function detectColumnsFromHeader(headerRow) {
+    const header = (headerRow || []).map(normHeader);
+    const found = {};
+    for (const [field, candidates] of Object.entries(HEADER_CANDIDATES)) {
+        const exclude = HEADER_EXCLUDE[field].map(normHeader);
+        const ok = (h) => h && !exclude.some((x) => h.includes(x));
+        let idx = -1;
+        // 1) 정확히 일치 (후보 순서대로)
+        for (const c of candidates) {
+            idx = header.indexOf(normHeader(c));
+            if (idx >= 0) break;
+        }
+        // 2) 포함 일치
+        if (idx < 0) {
+            for (const c of candidates) {
+                const nc = normHeader(c);
+                idx = header.findIndex((h) => ok(h) && h.includes(nc));
+                if (idx >= 0) break;
+            }
+        }
+        if (idx >= 0) found[field] = idx;
+    }
+    return found;
+}
+
+// 헤더가 비어 있는 이메일 열('연화선녀 5기 [8/17]' 의 F열)은 값에 '@' 가 많은 열로 찾는다.
+function detectEmailFromRows(rows) {
+    const sample = (rows || []).slice(0, 50);
+    if (sample.length === 0) return -1;
+    const width = Math.max(...sample.map((r) => r.length));
+    let best = -1;
+    let bestCount = 0;
+    for (let i = 0; i < width; i++) {
+        const count = sample.filter((r) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(r[i] ?? '').trim())).length;
+        if (count > bestCount) {
+            bestCount = count;
+            best = i;
+        }
+    }
+    return bestCount >= sample.length / 2 ? best : -1;
+}
+
+// 우선순위: 탭별 개별설정 > 헤더 자동감지 > 기본값
+const getColumnsForTab = (tabName, headerRow, dataRows) => {
     const override = SHEET_COLUMN_OVERRIDES[tabName];
-    return { ...DEFAULT_COLUMNS, ...(override || {}), isOverride: !!override };
+    if (override) return { ...DEFAULT_COLUMNS, ...override, mode: '개별설정', missing: [] };
+    const detected = detectColumnsFromHeader(headerRow);
+    if (!('email' in detected)) {
+        const e = detectEmailFromRows(dataRows);
+        if (e >= 0) detected.email = e;
+    }
+    const missing = Object.keys(DEFAULT_COLUMNS).filter((k) => !(k in detected));
+    return { ...DEFAULT_COLUMNS, ...detected, mode: '자동감지', missing };
 };
 
 const colLetter = (i) => {
@@ -78,11 +148,15 @@ function describeColumns(cols, headerRow) {
             .trim();
         return `${label}=${colLetter(i)}${title ? `(${title})` : ''}`;
     };
-    const tag = cols.isOverride ? '개별설정' : '기본값';
-    return `[${tag}] ${part('이름', cols.name)} · ${part('연락처', cols.phone)} · ${part(
+    const LABEL = { name: '이름', phone: '연락처', email: '이메일', amount: '금액' };
+    const base = `[${cols.mode}] ${part('이름', cols.name)} · ${part('연락처', cols.phone)} · ${part(
         '이메일',
         cols.email
     )} · ${part('금액', cols.amount)}`;
+    const miss = cols.missing || [];
+    return miss.length
+        ? `${base}\n⚠️ 헤더에서 못 찾아 기본 열 사용: ${miss.map((k) => LABEL[k]).join(', ')}`
+        : base;
 }
 
 const $ = (id) => document.getElementById(id);
@@ -366,9 +440,19 @@ window.selectTabItem = async function (tabName) {
         const values = resp.result.values || [];
         if (values.length === 0) throw new Error('빈 탭입니다.');
 
-        State.freeHeader = values[0];
-        State.free = values.slice(1);
-        State.columns = getColumnsForTab(tabName);
+        // 헤더가 1행이 아닐 수도 있어(제목 줄 등) 앞 10행 중 감지되는 열이 가장 많은 행을 헤더로 본다.
+        let headerIdx = 0;
+        let best = -1;
+        values.slice(0, 10).forEach((row, i) => {
+            const n = Object.keys(detectColumnsFromHeader(row)).length;
+            if (n > best) {
+                best = n;
+                headerIdx = i;
+            }
+        });
+        State.freeHeader = values[headerIdx];
+        State.free = values.slice(headerIdx + 1);
+        State.columns = getColumnsForTab(tabName, State.freeHeader, State.free);
 
         const desc = describeColumns(State.columns, State.freeHeader);
         const info = $('detected_columns');
@@ -533,7 +617,16 @@ function renderFinalReport() {
             </div>
             <table>
                 <thead><tr><th>이름</th><th>이메일</th><th>연락처</th><th>결제금액</th><th>매칭된 유입매체(결제자)</th></tr></thead>
-                <tbody>${detailTableRows || '<tr><td colspan="5" style="text-align:center">결제 데이터 없음</td></tr>'}</tbody>
+                <tbody>${
+                    detailTableRows ||
+                    `<tr><td colspan="5" style="text-align:center">${
+                        State.free.length > 0
+                            ? `결제 데이터 없음 — 시트에 ${State.free.length}행이 있지만 금액 열(${colLetter(
+                                  cols.amount
+                              )})에서 금액을 읽지 못했습니다. 위 Step 2의 열 표시를 확인해 주세요.`
+                            : '결제 데이터 없음'
+                    }</td></tr>`
+                }</tbody>
             </table>
         </div>
     `;
